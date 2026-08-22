@@ -12,8 +12,18 @@ CONSENT_CHOICES = [
 class Contact(models.Model):
     name = models.CharField(max_length=255)
     mobile = models.CharField(max_length=30, unique=True)
+    normalized_phone = models.CharField(max_length=15, unique=True, db_index=True)
     consent_status = models.CharField(max_length=20, choices=CONSENT_CHOICES, default="PENDING")
     created_at = models.DateTimeField(default=timezone.now)
+
+    def save(self, *args, **kwargs):
+        if not self.normalized_phone:
+            digits = "".join(ch for ch in str(self.mobile) if ch.isdigit())
+            local = digits[-10:]
+            if len(local) == 10:
+                self.mobile = local
+                self.normalized_phone = f"91{local}"
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.name} ({self.mobile})"

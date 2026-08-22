@@ -102,8 +102,8 @@ function App() {
 
   const handleCreateContact = async () => {
     const payload = { ...contactForm, name: contactForm.name.trim(), mobile: contactForm.mobile.trim() };
-    if (!payload.name || !payload.mobile) {
-      alert('Contact name and mobile number are required.');
+    if (!payload.mobile) {
+      alert('Mobile number is required.');
       return;
     }
     try {
@@ -140,6 +140,17 @@ function App() {
       loadDashboard();
     } catch (error: any) {
       alert(error?.response?.data?.error || 'Unable to delete contact');
+    }
+  };
+
+  const handleDeleteAllContacts = async () => {
+    if (!contacts.length || !window.confirm(`Delete all ${contacts.length} contacts? This cannot be undone.`)) return;
+    try {
+      await axios.delete(`${API_URL}/contacts/all`);
+      setSelectedIds([]);
+      await Promise.all([loadContacts(), loadGroups(), loadDashboard()]);
+    } catch (error: any) {
+      alert(error?.response?.data?.error || 'Unable to delete all contacts');
     }
   };
 
@@ -202,7 +213,7 @@ function App() {
       <main className="flex-1 p-6">
         <Routes>
           <Route path="/" element={<DashboardPage dashboard={dashboard} chartData={chartData} />} />
-          <Route path="/contacts" element={<ContactsPage contacts={contacts} contactForm={contactForm} setContactForm={setContactForm} onCreate={handleCreateContact} onEdit={handleEditContact} onDelete={handleDeleteContact} />} />
+          <Route path="/contacts" element={<ContactsPage contacts={contacts} groups={groups} contactForm={contactForm} setContactForm={setContactForm} onCreate={handleCreateContact} onEdit={handleEditContact} onDelete={handleDeleteContact} onDeleteAll={handleDeleteAllContacts} onImported={() => Promise.all([loadContacts(), loadGroups(), loadDashboard()])} />} />
           <Route path="/groups" element={<GroupWorkspacePage contacts={eligibleContacts} groups={groups} onSaved={loadGroups} />} />
           <Route path="/campaigns/new" element={<CreateCampaignPage eligibleContacts={eligibleContacts} groups={groups} selectedIds={selectedIds} setSelectedIds={setSelectedIds} defaultDelay={settings.default_delay_seconds} />} />
           <Route path="/campaigns" element={<CampaignsPage campaigns={campaigns} onRefresh={loadCampaigns} />} />
@@ -291,7 +302,7 @@ function DashboardPage({ dashboard, chartData }: { dashboard: DashboardData | nu
   );
 }
 
-function ContactsPage({ contacts, contactForm, setContactForm, onCreate, onEdit, onDelete }: { contacts: Contact[]; contactForm: any; setContactForm: any; onCreate: () => void; onEdit: (contact: Contact) => void; onDelete: (contact: Contact) => void; }) {
+function ContactsPage({ contacts, groups, contactForm, setContactForm, onCreate, onEdit, onDelete, onDeleteAll, onImported }: { contacts: Contact[]; groups: ContactGroup[]; contactForm: any; setContactForm: any; onCreate: () => void; onEdit: (contact: Contact) => void; onDelete: (contact: Contact) => void; onDeleteAll: () => void; onImported: () => Promise<any>; }) {
   return (
     <div className="space-y-6">
       <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
@@ -300,15 +311,17 @@ function ContactsPage({ contacts, contactForm, setContactForm, onCreate, onEdit,
             <p className="text-sm uppercase tracking-[0.2em] text-violet-300">Contacts</p>
             <h2 className="mt-1 text-3xl font-bold">Manage contacts</h2>
           </div>
-          <div className="rounded-lg bg-violet-600/20 px-3 py-2 text-sm font-medium text-violet-200">{contacts.length} Contacts</div>
+          <div className="flex items-center gap-3"><div className="rounded-lg bg-violet-600/20 px-3 py-2 text-sm font-medium text-violet-200">{contacts.length} Contacts</div><button onClick={onDeleteAll} disabled={!contacts.length} className="rounded-lg border border-red-900 px-3 py-2 text-sm font-medium text-red-300 hover:bg-red-950 disabled:cursor-not-allowed disabled:opacity-40">Delete all</button></div>
         </div>
       </div>
+
+      <BulkContactImport groups={groups} onImported={onImported} />
 
       <div className="grid gap-6 xl:grid-cols-[420px_1fr]">
         <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
           <h3 className="mb-4 text-xl font-semibold">Add Contact</h3>
           <div className="space-y-4">
-            <input required value={contactForm.name} onChange={(e) => setContactForm({ ...contactForm, name: e.target.value })} className="w-full rounded-xl border border-slate-700 bg-slate-950 p-3" placeholder="Contact Name" />
+            <input value={contactForm.name} onChange={(e) => setContactForm({ ...contactForm, name: e.target.value })} className="w-full rounded-xl border border-slate-700 bg-slate-950 p-3" placeholder="Contact Name (optional)" />
             <input required value={contactForm.mobile} onChange={(e) => setContactForm({ ...contactForm, mobile: e.target.value })} className="w-full rounded-xl border border-slate-700 bg-slate-950 p-3" placeholder="Mobile Number" />
             <select value={contactForm.consent_status} onChange={(e) => setContactForm({ ...contactForm, consent_status: e.target.value })} className="w-full rounded-xl border border-slate-700 bg-slate-950 p-3">
               <option value="OPTED_IN">OPTED_IN</option>
@@ -340,6 +353,79 @@ function ContactsPage({ contacts, contactForm, setContactForm, onCreate, onEdit,
       </div>
     </div>
   );
+}
+
+type ImportPreview = {
+  total_detected: number; valid_count: number; duplicate_count: number; invalid_count: number;
+  contacts_to_save: number; remaining_count: number;
+  invalid: { value: string; reason: string }[];
+};
+
+function BulkContactImport({ groups, onImported }: { groups: ContactGroup[]; onImported: () => Promise<any> }) {
+  const [text, setText] = useState('');
+  const [groupId, setGroupId] = useState('');
+  const [preview, setPreview] = useState<ImportPreview | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<any>(null);
+  const selectedGroup = groups.find((group) => String(group.id) === groupId);
+
+  const review = async () => {
+    if (!text.trim() || !groupId) return alert('Paste contacts and select a target group.');
+    setBusy(true);
+    try {
+      const { data } = await axios.post(`${API_URL}/contacts/paste/preview`, { text, group_id: Number(groupId) });
+      setPreview(data); setResult(null);
+    } catch (error: any) { alert(error?.response?.data?.error || 'Unable to review contacts'); }
+    finally { setBusy(false); }
+  };
+
+  const importContacts = async () => {
+    setBusy(true);
+    try {
+      const { data } = await axios.post(`${API_URL}/contacts/paste/import`, { text, group_id: Number(groupId) });
+      setResult(data); setPreview(null);
+      setText((data.remaining || []).join('\n'));
+      await onImported();
+    } catch (error: any) { alert(error?.response?.data?.error || 'Unable to complete import'); }
+    finally { setBusy(false); }
+  };
+
+  const continueInNewGroup = async () => {
+    const name = window.prompt('New group name');
+    if (!name?.trim()) return;
+    const limitValue = window.prompt('Contact limit', '60');
+    if (limitValue === null) return;
+    const limit = Number(limitValue);
+    if (!Number.isInteger(limit) || limit < 1) return alert('Contact limit must be a positive whole number.');
+    try {
+      const { data } = await axios.post(`${API_URL}/groups`, { name: name.trim(), max_members: limit, contact_ids: [] });
+      setBusy(true);
+      const imported = await axios.post(`${API_URL}/contacts/paste/import`, { text, group_id: data.id });
+      setGroupId(String(data.id)); setPreview(null); setResult(imported.data);
+      setText((imported.data.remaining || []).join('\n'));
+      await onImported();
+    } catch (error: any) { alert(error?.response?.data?.error || 'Unable to create group'); }
+    finally { setBusy(false); }
+  };
+
+  return <div className="rounded-2xl border border-violet-500/40 bg-slate-900 p-5">
+    <div className="mb-4"><p className="text-sm uppercase tracking-[0.2em] text-violet-300">Bulk Contact Import</p><h3 className="mt-1 text-2xl font-semibold">Google Sheets → Paste → Review → Import</h3><p className="mt-2 text-sm text-slate-400">Paste rows, columns, comma-separated or formatted Indian mobile numbers. Names and other cells are ignored.</p></div>
+    <div className="grid gap-4 lg:grid-cols-[1fr_280px]">
+      <textarea value={text} onChange={(event) => { setText(event.target.value); setPreview(null); setResult(null); }} rows={9} placeholder={'9876543210\n+91 9876543211\nRahul\t9876543212\tAhmedabad'} className="w-full rounded-xl border border-slate-700 bg-slate-950 p-4 font-mono text-sm" />
+      <div className="space-y-3">
+        <label className="block text-sm text-slate-300">Target group<select value={groupId} onChange={(event) => { setGroupId(event.target.value); setPreview(null); }} className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 p-3"><option value="">Choose a group</option>{groups.map((group) => <option key={group.id} value={group.id}>{group.name} ({group.member_count}/{group.max_members})</option>)}</select></label>
+        <button disabled={busy || !text.trim() || !groupId} onClick={review} className="w-full rounded-xl bg-violet-600 px-4 py-3 font-semibold disabled:opacity-40">{busy ? 'Checking…' : 'Review Contacts'}</button>
+        {!groups.length && <p className="text-sm text-amber-300">Create a group first, then return here to import contacts.</p>}
+      </div>
+    </div>
+    {preview && <div className="mt-5 rounded-xl border border-slate-700 bg-slate-950 p-4">
+      <h4 className="font-semibold">Import preview · {selectedGroup?.name}</h4>
+      <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-6">{[['Detected', preview.total_detected], ['New', preview.valid_count], ['Duplicates', preview.duplicate_count], ['Invalid', preview.invalid_count], ['Will add', preview.contacts_to_save], ['Remaining', preview.remaining_count]].map(([label, value]) => <div key={label} className="rounded-lg bg-slate-900 p-3"><div className="text-xs text-slate-400">{label}</div><div className="text-xl font-bold">{value}</div></div>)}</div>
+      {!!preview.invalid.length && <details className="mt-3 text-sm text-red-300"><summary className="cursor-pointer">Show invalid numbers</summary><ul className="mt-2 space-y-1">{preview.invalid.map((item, index) => <li key={`${item.value}-${index}`}>{item.value} — {item.reason}</li>)}</ul></details>}
+      <div className="mt-4 flex gap-3"><button disabled={busy || preview.contacts_to_save === 0} onClick={importContacts} className="rounded-xl bg-emerald-600 px-5 py-3 font-semibold disabled:opacity-40">Import {preview.contacts_to_save} Contacts</button><button onClick={() => setPreview(null)} className="rounded-xl border border-slate-700 px-5 py-3">Cancel</button></div>
+    </div>}
+    {result && <div className="mt-5 rounded-xl border border-emerald-700/50 bg-emerald-950/20 p-4"><h4 className="font-semibold text-emerald-300">Import completed</h4><p className="mt-2 text-sm">Added: {result.added} · Duplicates: {result.duplicates} · Invalid: {result.invalid} · Remaining: {result.remaining_count}</p>{result.remaining_count > 0 && <div className="mt-4"><p className="mb-3 text-sm text-amber-200">The remaining contacts are still in the paste area. Continue in another group without pasting again.</p><button onClick={continueInNewGroup} className="rounded-xl bg-violet-600 px-4 py-2 font-semibold">Continue with another group</button></div>}</div>}
+  </div>;
 }
 
 function CreateCampaignPage({ eligibleContacts, groups, selectedIds, setSelectedIds, defaultDelay }: { eligibleContacts: Contact[]; groups: ContactGroup[]; selectedIds: number[]; setSelectedIds: any; defaultDelay: number; }) {

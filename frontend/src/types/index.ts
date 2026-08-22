@@ -4,6 +4,7 @@ export type Contact = {
   id: number;
   name: string;
   mobile: string;
+  normalized_phone?: string;
   consent_status: ConsentStatus;
   created_at?: string;
 };

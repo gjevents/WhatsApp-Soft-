@@ -9,6 +9,9 @@ from .views import (
     CampaignSendView,
     CampaignStopView,
     ContactImportView,
+    ContactPastePreviewView,
+    ContactPasteCommitView,
+    ContactDeleteAllView,
     ContactDetailView,
     ContactListCreateView,
     DashboardView,
@@ -26,8 +29,11 @@ from .views import (
 
 urlpatterns = [
     path("contacts", ContactListCreateView.as_view(), name="contacts"),
+    path("contacts/all", ContactDeleteAllView.as_view(), name="contacts-delete-all"),
     path("contacts/<int:pk>", ContactDetailView.as_view(), name="contact-detail"),
     path("contacts/import", ContactImportView.as_view(), name="contacts-import"),
+    path("contacts/paste/preview", ContactPastePreviewView.as_view(), name="contacts-paste-preview"),
+    path("contacts/paste/import", ContactPasteCommitView.as_view(), name="contacts-paste-import"),
     path("campaigns", CampaignListCreateView.as_view(), name="campaigns"),
     path("campaigns/<int:pk>", CampaignDetailView.as_view(), name="campaign-detail"),
     path("campaigns/<int:pk>/send", CampaignSendView.as_view(), name="campaign-send"),

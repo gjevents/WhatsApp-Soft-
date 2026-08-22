@@ -28,6 +28,43 @@ class CampaignSendViewTests(TestCase):
         self.assertIn('service unavailable', FailedMessage.objects.filter(campaign=campaign, contact=contact).latest('created_at').error)
 
 
+class ContactViewTests(TestCase):
+    def test_blank_names_use_gjc_series_and_explicit_names_are_preserved(self):
+        response = self.client.post(
+            "/api/contacts",
+            {"name": "", "mobile": "9876543210", "consent_status": "OPTED_IN"},
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()["name"], "GJC1")
+
+        response = self.client.post(
+            "/api/contacts",
+            {"name": "Priya Shah", "mobile": "9876543211", "consent_status": "OPTED_IN"},
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()["name"], "Priya Shah")
+
+        response = self.client.post(
+            "/api/contacts",
+            {"mobile": "9876543212", "consent_status": "OPTED_IN"},
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()["name"], "GJC2")
+
+    def test_delete_all_contacts(self):
+        Contact.objects.create(name="Alice", mobile="9876543210")
+        Contact.objects.create(name="Bob", mobile="9876543211")
+
+        response = self.client.delete("/api/contacts/all")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["deleted"], 2)
+        self.assertEqual(Contact.objects.count(), 0)
+
+
 class ContactGroupViewTests(TestCase):
     def test_group_limit_is_saved_and_enforced(self):
         contacts = [
@@ -104,3 +141,61 @@ class ContactGroupViewTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["member_count"], 2)
+
+
+class BulkContactPasteTests(TestCase):
+    def setUp(self):
+        self.group = ContactGroup.objects.create(name="Marketing", max_members=2)
+
+    def test_google_sheets_data_is_normalized_and_previewed(self):
+        Contact.objects.create(name="Existing", mobile="9876543210")
+        response = self.client.post(
+            "/api/contacts/paste/preview",
+            {
+                "group_id": self.group.id,
+                "text": "John\t+91 9876543210\tAhmedabad\nRahul\t919876543211\n9876543211\n12345",
+            },
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["total_detected"], 4)
+        self.assertEqual(response.json()["valid_count"], 1)
+        self.assertEqual(response.json()["duplicate_count"], 2)
+        self.assertEqual(response.json()["invalid_count"], 1)
+
+    def test_import_enforces_limit_and_retry_is_idempotent(self):
+        pasted = "9876543211\n9876543212\n9876543213"
+        response = self.client.post(
+            "/api/contacts/paste/import",
+            {"group_id": self.group.id, "text": pasted},
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["added"], 2)
+        self.assertEqual(response.json()["remaining_count"], 1)
+        self.assertEqual(self.group.contacts.count(), 2)
+
+        retry = self.client.post(
+            "/api/contacts/paste/import",
+            {"group_id": self.group.id, "text": pasted},
+            content_type="application/json",
+        )
+        self.assertEqual(retry.status_code, 200)
+        self.assertEqual(retry.json()["added"], 0)
+        self.assertEqual(Contact.objects.count(), 2)
+
+    def test_overflow_can_continue_without_repasting_original_text(self):
+        first = self.client.post(
+            "/api/contacts/paste/import",
+            {"group_id": self.group.id, "text": "9876543211\n9876543212\n9876543213"},
+            content_type="application/json",
+        ).json()
+        overflow = ContactGroup.objects.create(name="Sales", max_members=1)
+        second = self.client.post(
+            "/api/contacts/paste/import",
+            {"group_id": overflow.id, "text": "\n".join(first["remaining"])},
+            content_type="application/json",
+        )
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(second.json()["added"], 1)
+        self.assertEqual(second.json()["remaining_count"], 0)

@@ -8,7 +8,7 @@ from .models import Campaign, CampaignRecipient, Contact, ContactGroup, FailedMe
 class ContactSerializer(serializers.ModelSerializer):
     class Meta:
         model = Contact
-        fields = ["id", "name", "mobile", "consent_status", "created_at"]
+        fields = ["id", "name", "mobile", "normalized_phone", "consent_status", "created_at"]
 
 
 class CampaignSerializer(serializers.ModelSerializer):

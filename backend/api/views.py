@@ -3,10 +3,11 @@ import json
 import os
 import asyncio
 import time
+import re
 from io import BytesIO
 
 import requests
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.http import FileResponse, JsonResponse
 from django.utils import timezone
 from django.core.files.storage import default_storage
@@ -17,15 +18,18 @@ from rest_framework.views import APIView
 
 from .models import Campaign, CampaignRecipient, Contact, ContactGroup, FailedMessage, MediaAsset, WhatsAppSettings
 from .serializers import BulkContactUploadSerializer, CampaignSerializer, ContactGroupSerializer, ContactSerializer, FailedMessageSerializer
+from .contact_import import normalize_phone, parse_pasted_contacts
 
 WHATSAPP_SERVICE_URL = os.getenv("WHATSAPP_SERVICE_URL", "http://localhost:3001")
 
 
-def normalize_phone(raw):
-    digits = "".join(ch for ch in str(raw) if ch.isdigit())
-    if len(digits) >= 10:
-        return digits[-10:]
-    return digits
+def next_contact_name():
+    numbers = [
+        int(match.group(1))
+        for name in Contact.objects.values_list("name", flat=True)
+        if (match := re.fullmatch(r"GJC(\d+)", name.strip(), re.IGNORECASE))
+    ]
+    return f"GJC{max(numbers, default=0) + 1}"
 
 
 def get_setting(key, default=""):
@@ -48,15 +52,16 @@ class ContactListCreateView(APIView):
 
     def post(self, request):
         data = request.data
-        clean_number = normalize_phone(data.get("mobile") or data.get("phone"))
+        normalized = normalize_phone(data.get("mobile") or data.get("phone"))
+        clean_number = normalized[2:] if normalized else None
         if not clean_number:
             return Response({"error": "Mobile number is required."}, status=400)
 
-        existing = Contact.objects.filter(mobile=clean_number).first()
+        existing = Contact.objects.filter(normalized_phone=normalized).first()
         if existing:
             return Response({"error": "Contact with this mobile number already exists."}, status=400)
 
-        payload = {"name": data.get("name", "").strip(), "mobile": clean_number, "consent_status": data.get("consent_status", "OPTED_IN")}
+        payload = {"name": str(data.get("name") or "").strip() or next_contact_name(), "mobile": clean_number, "normalized_phone": normalized, "consent_status": data.get("consent_status", "OPTED_IN")}
         serializer = ContactSerializer(data=payload)
         if serializer.is_valid():
             serializer.save()
@@ -71,23 +76,32 @@ class ContactListCreateView(APIView):
         return Response({"success": True})
 
 
+class ContactDeleteAllView(APIView):
+    def delete(self, request):
+        deleted, _ = Contact.objects.all().delete()
+        return Response({"success": True, "deleted": deleted})
+
+
 class ContactDetailView(APIView):
     def put(self, request, pk):
         contact = Contact.objects.filter(pk=pk).first()
         if not contact:
             return Response({"error": "Contact not found."}, status=404)
-        clean_number = normalize_phone(request.data.get("mobile") or contact.mobile)
+        normalized = normalize_phone(request.data.get("mobile") or contact.mobile)
+        clean_number = normalized[2:] if normalized else None
         if not clean_number:
             return Response({"error": "Mobile number is required."}, status=400)
-        if Contact.objects.filter(mobile=clean_number).exclude(pk=pk).exists():
+        if Contact.objects.filter(normalized_phone=normalized).exclude(pk=pk).exists():
             return Response({"error": "Contact with this mobile number already exists."}, status=400)
         contact.name = str(request.data.get("name", contact.name)).strip()
         contact.mobile = clean_number
+        contact.normalized_phone = normalized
         if "consent_status" in request.data:
             contact.consent_status = request.data["consent_status"]
         serializer = ContactSerializer(contact, data={
             "name": contact.name,
             "mobile": contact.mobile,
+            "normalized_phone": contact.normalized_phone,
             "consent_status": contact.consent_status,
         }, partial=True)
         if serializer.is_valid():
@@ -129,16 +143,17 @@ class ContactImportView(APIView):
         for row in rows:
             if not row:
                 continue
-            name = str(row.get("name") or row.get("Name") or "").strip()
-            mobile = normalize_phone(row.get("mobile") or row.get("phone") or row.get("Mobile") or row.get("Phone") or "")
+            name = str(row.get("name") or row.get("Name") or "").strip() or next_contact_name()
+            normalized = normalize_phone(row.get("mobile") or row.get("phone") or row.get("Mobile") or row.get("Phone") or "")
+            mobile = normalized[2:] if normalized else None
             consent = str(row.get("consent_status") or row.get("consentStatus") or row.get("Consent") or "OPTED_IN").upper()
             if not mobile:
                 invalid += 1
                 continue
-            if Contact.objects.filter(mobile=mobile).exists():
+            if Contact.objects.filter(normalized_phone=normalized).exists():
                 duplicates += 1
                 continue
-            Contact.objects.create(name=name or "Unknown Contact", mobile=mobile, consent_status=consent if consent in {"OPTED_IN", "PENDING", "OPTED_OUT"} else "OPTED_IN")
+            Contact.objects.create(name=name or "Unknown Contact", mobile=mobile, normalized_phone=normalized, consent_status=consent if consent in {"OPTED_IN", "PENDING", "OPTED_OUT"} else "OPTED_IN")
             created += 1
 
         return Response({
@@ -147,6 +162,78 @@ class ContactImportView(APIView):
             "duplicates": duplicates,
             "invalid": invalid,
             "count": Contact.objects.count(),
+        })
+
+
+def contact_import_preview(text, group=None):
+    parsed = parse_pasted_contacts(text)
+    existing = set(Contact.objects.values_list("normalized_phone", flat=True))
+    seen = set()
+    valid, duplicates, invalid = [], [], []
+    for item in parsed:
+        if not item.normalized:
+            invalid.append({"value": item.raw, "reason": item.reason})
+        elif item.normalized in existing or item.normalized in seen:
+            duplicates.append(item.raw)
+        else:
+            seen.add(item.normalized)
+            valid.append(item.normalized)
+    capacity = max(group.max_members - group.contacts.count(), 0) if group else len(valid)
+    return {
+        "total_detected": len(parsed),
+        "valid_count": len(valid),
+        "duplicate_count": len(duplicates),
+        "invalid_count": len(invalid),
+        "valid_contacts": valid,
+        "duplicates": duplicates,
+        "invalid": invalid,
+        "contacts_to_save": min(len(valid), capacity),
+        "remaining_count": max(len(valid) - capacity, 0),
+        "group": ContactGroupSerializer(group).data if group else None,
+    }
+
+
+class ContactPastePreviewView(APIView):
+    def post(self, request):
+        group = ContactGroup.objects.filter(pk=request.data.get("group_id")).first()
+        if not group:
+            return Response({"error": "Select a valid target group."}, status=400)
+        return Response(contact_import_preview(str(request.data.get("text") or ""), group))
+
+
+class ContactPasteCommitView(APIView):
+    def post(self, request):
+        text = str(request.data.get("text") or "")
+        try:
+            with transaction.atomic():
+                group = ContactGroup.objects.select_for_update().filter(pk=request.data.get("group_id")).first()
+                if not group:
+                    return Response({"error": "Select a valid target group."}, status=400)
+                preview = contact_import_preview(text, group)
+                capacity = max(group.max_members - group.contacts.count(), 0)
+                selected = preview["valid_contacts"][:capacity]
+                remaining = preview["valid_contacts"][capacity:]
+                base = Contact.objects.count()
+                created = []
+                race_duplicates = 0
+                for index, normalized in enumerate(selected, start=1):
+                    try:
+                        with transaction.atomic():
+                            contact = Contact.objects.create(
+                                name=f"GJC{base + index}", mobile=normalized[2:],
+                                normalized_phone=normalized, consent_status="OPTED_IN",
+                            )
+                        created.append(contact)
+                    except IntegrityError:
+                        race_duplicates += 1
+                group.contacts.add(*created)
+        except Exception:
+            return Response({"error": "Unable to complete import. No contacts were silently lost. Please try again."}, status=500)
+        return Response({
+            "success": True, "added": len(created),
+            "duplicates": preview["duplicate_count"] + race_duplicates,
+            "invalid": preview["invalid_count"], "remaining": remaining,
+            "remaining_count": len(remaining), "group": ContactGroupSerializer(group).data,
         })
 
 
