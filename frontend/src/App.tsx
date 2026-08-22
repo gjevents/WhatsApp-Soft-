@@ -7,6 +7,9 @@ import { Bar, BarChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Too
 import { io } from 'socket.io-client';
 import type { AppSettings, Campaign, Contact, ContactGroup, DashboardData, MediaFile } from './types';
 
+const API_URL = import.meta.env.VITE_API_URL || '/api';
+const WHATSAPP_SOCKET_URL = import.meta.env.VITE_WHATSAPP_SOCKET_URL || window.location.origin;
+
 const navItems = [
   { label: 'Dashboard', to: '/', icon: LayoutDashboard },
   { label: 'Contacts', to: '/contacts', icon: Contact2 },
@@ -33,7 +36,7 @@ function App() {
 
   const loadDashboard = async () => {
     try {
-      const { data } = await axios.get('http://localhost:8000/api/dashboard');
+      const { data } = await axios.get(`${API_URL}/dashboard`);
       setDashboard(data);
     } catch (error) {
       console.error(error);
@@ -42,7 +45,7 @@ function App() {
 
   const loadContacts = async () => {
     try {
-      const { data } = await axios.get('http://localhost:8000/api/contacts');
+      const { data } = await axios.get(`${API_URL}/contacts`);
       setContacts(data.items || []);
     } catch (error) {
       console.error(error);
@@ -51,7 +54,7 @@ function App() {
 
   const loadCampaigns = async () => {
     try {
-      const { data } = await axios.get('http://localhost:8000/api/campaigns');
+      const { data } = await axios.get(`${API_URL}/campaigns`);
       setCampaigns(data.items || []);
     } catch (error) {
       console.error(error);
@@ -60,7 +63,7 @@ function App() {
 
   const loadWhatsAppState = async () => {
     try {
-      const { data } = await axios.get('http://localhost:8000/api/whatsapp/status');
+      const { data } = await axios.get(`${API_URL}/whatsapp/status`);
       setWhatsappStatus(data);
     } catch (error) {
       console.error(error);
@@ -68,12 +71,12 @@ function App() {
   };
 
   const loadGroups = async () => {
-    const { data } = await axios.get('http://localhost:8000/api/groups');
+    const { data } = await axios.get(`${API_URL}/groups`);
     setGroups(data.items || []);
   };
 
   const loadSettings = async () => {
-    const { data } = await axios.get('http://localhost:8000/api/settings');
+    const { data } = await axios.get(`${API_URL}/settings`);
     setSettings(data);
   };
 
@@ -85,7 +88,7 @@ function App() {
     loadGroups();
     loadSettings();
 
-    const socket = io('http://localhost:3001');
+    const socket = io(WHATSAPP_SOCKET_URL, { path: '/socket.io' });
     socket.on('whatsapp-state', (payload) => {
       setWhatsappStatus(payload);
     });
@@ -98,13 +101,22 @@ function App() {
   const eligibleContacts = useMemo(() => contacts.filter((contact) => contact.consent_status === 'OPTED_IN'), [contacts]);
 
   const handleCreateContact = async () => {
+    const payload = { ...contactForm, name: contactForm.name.trim(), mobile: contactForm.mobile.trim() };
+    if (!payload.name || !payload.mobile) {
+      alert('Contact name and mobile number are required.');
+      return;
+    }
     try {
-      await axios.post('http://localhost:8000/api/contacts', contactForm);
+      await axios.post(`${API_URL}/contacts`, payload);
       setContactForm(emptyContactForm);
       loadContacts();
       loadDashboard();
     } catch (error: any) {
-      alert(error?.response?.data?.error || 'Unable to create contact');
+      const responseData = error?.response?.data;
+      const validationMessage = responseData && Object.entries(responseData)
+        .map(([field, messages]) => `${field}: ${Array.isArray(messages) ? messages.join(', ') : messages}`)
+        .join('\n');
+      alert(responseData?.error || validationMessage || 'Unable to create contact');
     }
   };
 
@@ -112,7 +124,7 @@ function App() {
     const name = window.prompt('Contact name', contact.name);
     if (name === null || !name.trim()) return;
     try {
-      await axios.put(`http://localhost:8000/api/contacts/${contact.id}`, { ...contact, name: name.trim() });
+      await axios.put(`${API_URL}/contacts/${contact.id}`, { ...contact, name: name.trim() });
       loadContacts();
     } catch (error: any) {
       alert(error?.response?.data?.error || 'Unable to edit contact');
@@ -122,7 +134,7 @@ function App() {
   const handleDeleteContact = async (contact: Contact) => {
     if (!window.confirm(`Delete ${contact.name}?`)) return;
     try {
-      await axios.delete(`http://localhost:8000/api/contacts/${contact.id}`);
+      await axios.delete(`${API_URL}/contacts/${contact.id}`);
       loadContacts();
       loadGroups();
       loadDashboard();
@@ -137,7 +149,7 @@ function App() {
         alert('Save the WhatsApp number in Settings before connecting.');
         return;
       }
-      await axios.post('http://localhost:8000/api/whatsapp/connect', { phone: settings.connected_phone });
+      await axios.post(`${API_URL}/whatsapp/connect`, { phone: settings.connected_phone });
       loadWhatsAppState();
     } catch (error: any) {
       alert(error?.response?.data?.error || 'Unable to connect');
@@ -146,7 +158,7 @@ function App() {
 
   const handleDisconnectWhatsApp = async () => {
     try {
-      await axios.post('http://localhost:8000/api/whatsapp/disconnect');
+      await axios.post(`${API_URL}/whatsapp/disconnect`);
       loadWhatsAppState();
     } catch (error: any) {
       alert(error?.response?.data?.error || 'Unable to disconnect');
@@ -296,7 +308,8 @@ function ContactsPage({ contacts, contactForm, setContactForm, onCreate, onEdit,
         <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
           <h3 className="mb-4 text-xl font-semibold">Add Contact</h3>
           <div className="space-y-4">
-            <input value={contactForm.mobile} onChange={(e) => setContactForm({ ...contactForm, mobile: e.target.value })} className="w-full rounded-xl border border-slate-700 bg-slate-950 p-3" placeholder="Mobile Number" />
+            <input required value={contactForm.name} onChange={(e) => setContactForm({ ...contactForm, name: e.target.value })} className="w-full rounded-xl border border-slate-700 bg-slate-950 p-3" placeholder="Contact Name" />
+            <input required value={contactForm.mobile} onChange={(e) => setContactForm({ ...contactForm, mobile: e.target.value })} className="w-full rounded-xl border border-slate-700 bg-slate-950 p-3" placeholder="Mobile Number" />
             <select value={contactForm.consent_status} onChange={(e) => setContactForm({ ...contactForm, consent_status: e.target.value })} className="w-full rounded-xl border border-slate-700 bg-slate-950 p-3">
               <option value="OPTED_IN">OPTED_IN</option>
               <option value="PENDING">PENDING</option>
@@ -353,12 +366,12 @@ function CreateCampaignPage({ eligibleContacts, groups, selectedIds, setSelected
       const mediaIds = await Promise.all(files.map(async (file) => {
         const mediaForm = new FormData();
         mediaForm.append('file', file);
-        const { data } = await axios.post('http://localhost:8000/api/media/upload', mediaForm);
+        const { data } = await axios.post(`${API_URL}/media/upload`, mediaForm);
         return data.media.id;
       }));
       form.append('media_ids', JSON.stringify(mediaIds));
-      const { data: campaign } = await axios.post('http://localhost:8000/api/campaigns', form);
-      await axios.post(`http://localhost:8000/api/campaigns/${campaign.id}/send`);
+      const { data: campaign } = await axios.post(`${API_URL}/campaigns`, form);
+      await axios.post(`${API_URL}/campaigns/${campaign.id}/send`);
       alert('Campaign created and sending started.');
       setCampaignName('');
       setSelectedIds([]);
@@ -462,7 +475,7 @@ function GroupsPage({ contacts, groups, onSaved }: { contacts: Contact[]; groups
         alert(`Select no more than ${maxMembers} contacts.`);
         return;
       }
-      await axios.post('http://localhost:8000/api/groups', { name, max_members: maxMembers, contact_ids: selected });
+      await axios.post(`${API_URL}/groups`, { name, max_members: maxMembers, contact_ids: selected });
       setName('');
         setMaxMembers(60);
       setSelected([]);
@@ -480,7 +493,7 @@ function GroupManagerPageFixed({ contacts, groups, onSaved }: { contacts: Contac
     const name = window.prompt('Group name');
     if (!name?.trim()) return;
     try {
-      await axios.post('http://localhost:8000/api/groups', { name: name.trim(), max_members: 60, contact_ids: [] });
+      await axios.post(`${API_URL}/groups`, { name: name.trim(), max_members: 60, contact_ids: [] });
       await onSaved();
     } catch (error: any) {
       alert(error?.response?.data?.error || 'Unable to create group');
@@ -497,7 +510,7 @@ function GroupManagerPageFixed({ contacts, groups, onSaved }: { contacts: Contac
 
   const updateGroup = async (group: ContactGroup, contactIds: number[], name = group.name, maxMembers = group.max_members) => {
     try {
-      await axios.put(`http://localhost:8000/api/groups/${group.id}`, { name, max_members: maxMembers, contact_ids: contactIds });
+      await axios.put(`${API_URL}/groups/${group.id}`, { name, max_members: maxMembers, contact_ids: contactIds });
       setPendingContactIds([]);
       await onSaved();
     } catch (error: any) {
@@ -526,7 +539,7 @@ function GroupManagerPageFixed({ contacts, groups, onSaved }: { contacts: Contac
   const deleteGroup = async (group: ContactGroup) => {
     if (!window.confirm(`Delete ${group.name}? Contacts will remain in your contact list.`)) return;
     try {
-      await axios.delete(`http://localhost:8000/api/groups/${group.id}`);
+      await axios.delete(`${API_URL}/groups/${group.id}`);
       setSelectedGroupId(null);
       await onSaved();
     } catch (error: any) {
@@ -545,7 +558,7 @@ function GroupManagerPage({ contacts, groups, onSaved }: { contacts: Contact[]; 
 
   const updateGroup = async (group: ContactGroup, changes: { name?: string; max_members?: number; contact_ids?: number[] }) => {
     try {
-      await axios.put(`http://localhost:8000/api/groups/${group.id}`, {
+      await axios.put(`${API_URL}/groups/${group.id}`, {
         name: group.name,
         max_members: group.max_members,
         contact_ids: group.contacts.map((contact) => contact.id),
@@ -568,7 +581,7 @@ function GroupManagerPage({ contacts, groups, onSaved }: { contacts: Contact[]; 
   const deleteGroup = async (group: ContactGroup) => {
     if (!window.confirm(`Delete ${group.name}? Contacts will remain in your contact list.`)) return;
     try {
-      await axios.delete(`http://localhost:8000/api/groups/${group.id}`);
+      await axios.delete(`${API_URL}/groups/${group.id}`);
       setSelectedGroupId(null);
       await onSaved();
     } catch (error: any) {
@@ -590,7 +603,7 @@ function GroupWorkspacePage({ contacts, groups, onSaved }: { contacts: Contact[]
     const name = window.prompt('Group name');
     if (!name?.trim()) return;
     try {
-      const { data } = await axios.post('http://localhost:8000/api/groups', { name: name.trim(), max_members: 60, contact_ids: [] });
+      const { data } = await axios.post(`${API_URL}/groups`, { name: name.trim(), max_members: 60, contact_ids: [] });
       setSelectedGroupId(data.id);
       await onSaved();
     } catch (error: any) { alert(error?.response?.data?.error || 'Unable to create group'); }
@@ -598,7 +611,7 @@ function GroupWorkspacePage({ contacts, groups, onSaved }: { contacts: Contact[]
 
   const updateGroup = async (group: ContactGroup, changes: { name?: string; max_members?: number; contact_ids?: number[] }) => {
     try {
-      await axios.put(`http://localhost:8000/api/groups/${group.id}`, {
+      await axios.put(`${API_URL}/groups/${group.id}`, {
         name: group.name,
         max_members: group.max_members,
         contact_ids: group.contacts.map((contact) => contact.id),
@@ -620,7 +633,7 @@ function GroupWorkspacePage({ contacts, groups, onSaved }: { contacts: Contact[]
   const deleteGroup = async (group: ContactGroup) => {
     if (!window.confirm(`Delete ${group.name}? Contacts will remain in your contact list.`)) return;
     try {
-      await axios.delete(`http://localhost:8000/api/groups/${group.id}`);
+      await axios.delete(`${API_URL}/groups/${group.id}`);
       setSelectedGroupId(null);
       await onSaved();
     } catch (error: any) { alert(error?.response?.data?.error || 'Unable to delete group'); }
@@ -642,15 +655,15 @@ function GroupWorkspacePage({ contacts, groups, onSaved }: { contacts: Contact[]
 function MediaLibraryPage() {
   const [files, setFiles] = useState<MediaFile[]>([]);
   const [uploading, setUploading] = useState(false);
-  const loadFiles = async () => { const { data } = await axios.get('http://localhost:8000/api/media/upload'); setFiles(data.items || []); };
+  const loadFiles = async () => { const { data } = await axios.get(`${API_URL}/media/upload`); setFiles(data.items || []); };
   useEffect(() => { loadFiles().catch(() => alert('Unable to load media files')); }, []);
   const upload = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
     setUploading(true);
-    try { const form = new FormData(); form.append('file', file); await axios.post('http://localhost:8000/api/media/upload', form); await loadFiles(); event.target.value = ''; } catch (error: any) { alert(error?.response?.data?.error || 'Unable to upload file'); } finally { setUploading(false); }
+    try { const form = new FormData(); form.append('file', file); await axios.post(`${API_URL}/media/upload`, form); await loadFiles(); event.target.value = ''; } catch (error: any) { alert(error?.response?.data?.error || 'Unable to upload file'); } finally { setUploading(false); }
   };
-  const getFileUrl = (file: MediaFile) => file.url || `http://localhost:8000/media/${file.storage_path?.replaceAll('\\', '/')}`;
+  const getFileUrl = (file: MediaFile) => file.url || `/media/${file.storage_path?.replaceAll('\\', '/')}`;
   const renderPreview = (file: MediaFile) => {
     const url = getFileUrl(file);
     if (file.file_type.match(/^(jpg|jpeg|png|webp)$/)) return <img src={url} alt={file.original_name || file.file_name} className="h-20 w-20 rounded-lg object-cover" />;
@@ -663,14 +676,14 @@ function MediaLibraryPage() {
 
 function ReportsDashboardPage() {
   const [report, setReport] = useState<any[]>([]);
-  useEffect(() => { axios.get('http://localhost:8000/api/reports').then(({ data }) => setReport(data.campaigns || [])).catch(() => alert('Unable to load reports')); }, []);
+  useEffect(() => { axios.get(`${API_URL}/reports`).then(({ data }) => setReport(data.campaigns || [])).catch(() => alert('Unable to load reports')); }, []);
   return <div className="space-y-6"><div><p className="text-sm uppercase tracking-[0.2em] text-violet-300">Reports</p><h2 className="mt-1 text-3xl font-bold">Campaign reports</h2></div><div className="overflow-x-auto rounded-2xl border border-slate-800 bg-slate-900 p-5"><table className="w-full min-w-[720px] text-left text-sm"><thead className="border-b border-slate-700 text-slate-400"><tr><th className="p-3">Campaign</th><th className="p-3">Status</th><th className="p-3">Total</th><th className="p-3">Sent</th><th className="p-3">Failed</th><th className="p-3">Success rate</th></tr></thead><tbody>{report.map((item) => <tr key={item.id} className="border-b border-slate-800"><td className="p-3 font-medium">{item.name}</td><td className="p-3">{item.status}</td><td className="p-3">{item.total}</td><td className="p-3 text-emerald-300">{item.sent}</td><td className="p-3 text-red-300">{item.failed}</td><td className="p-3">{item.success_rate}%</td></tr>)}</tbody></table>{report.length === 0 && <p className="p-3 text-slate-400">No campaign reports yet.</p>}</div></div>;
 }
 
 function SettingsPage({ settings, onSaved }: { settings: AppSettings; onSaved: () => void }) {
   const [form, setForm] = useState(settings);
   useEffect(() => setForm(settings), [settings]);
-  const save = async () => { await axios.put('http://localhost:8000/api/settings', form); onSaved(); alert('Settings saved'); };
+  const save = async () => { await axios.put(`${API_URL}/settings`, form); onSaved(); alert('Settings saved'); };
   return <div className="space-y-6"><div><p className="text-sm uppercase tracking-[0.2em] text-violet-300">Settings</p><h2 className="mt-1 text-3xl font-bold">Workspace settings</h2></div><div className="max-w-2xl rounded-2xl border border-slate-800 bg-slate-900 p-5"><div className="space-y-4"><label className="block text-sm">WhatsApp number used for login<input value={form.connected_phone} onChange={(e) => setForm({ ...form, connected_phone: e.target.value })} placeholder="919876543210" className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 p-3" /></label><label className="block text-sm">Default gap between messages (seconds)<input type="number" min={0} value={form.default_delay_seconds} onChange={(e) => setForm({ ...form, default_delay_seconds: Number(e.target.value) })} className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 p-3" /></label><button onClick={save} className="rounded-xl bg-violet-600 px-4 py-3 font-semibold">Save settings</button></div></div></div>;
 }
 

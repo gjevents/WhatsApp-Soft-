@@ -5,6 +5,14 @@ export default defineConfig({
   plugins: [react()],
   server: {
     port: 5173,
-    host: '0.0.0.0'
+    host: '0.0.0.0',
+    proxy: {
+      '/api': 'http://127.0.0.1:8000',
+      '/media': 'http://127.0.0.1:8000',
+      '/socket.io': {
+        target: 'http://127.0.0.1:3001',
+        ws: true,
+      },
+    },
   }
 });
