@@ -69,8 +69,7 @@ function createClient() {
           '--no-sandbox',
           '--disable-setuid-sandbox',
           '--disable-dev-shm-usage',
-          '--disable-gpu',
-          '--single-process'
+          '--disable-gpu'
         ],
         timeout: 60000
       }
