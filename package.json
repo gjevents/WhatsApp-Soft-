@@ -1,0 +1,9 @@
+{
+  "name": "gj-events-whatsapp-automation",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Run start.bat to launch all services. No npm scripts needed.",
+  "scripts": {
+    "install:all": "npm install --prefix frontend && npm install --prefix whatsapp-service && python -m pip install -r backend/requirements.txt"
+  }
+}

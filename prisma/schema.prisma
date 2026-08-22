@@ -1,0 +1,102 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Contact {
+  id                 String   @id @default(cuid())
+  name               String
+  phone              String
+  countryCode        String
+  consentStatus      String   @default("UNKNOWN")
+  active             Boolean  @default(true)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  campaignRecipients CampaignRecipient[]
+
+  @@unique([phone, countryCode])
+}
+
+model Campaign {
+  id             String   @id @default(cuid())
+  name           String
+  message        String
+  mediaPath      String?
+  status         String   @default("DRAFT")
+  delaySeconds   Int      @default(10)
+  maxRecipients  Int?
+  recipientCount Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  recipients     CampaignRecipient[]
+  media          Media[]
+}
+
+model CampaignRecipient {
+  id           String    @id @default(cuid())
+  campaignId   String
+  contactId    String
+  status       String    @default("PENDING")
+  attemptCount Int       @default(0)
+  sentAt       DateTime?
+  failedAt     DateTime?
+  errorMessage String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  contact  Contact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, contactId])
+}
+
+model Media {
+  id         String   @id @default(cuid())
+  fileName   String
+  filePath   String
+  mimeType   String
+  size       Int
+  campaignId String?
+  createdAt  DateTime @default(now())
+
+  campaign Campaign? @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+}
+
+model WhatsAppSession {
+  id             String    @id @default(cuid())
+  status         String    @default("DISCONNECTED")
+  sessionPath    String?
+  qrCodeData     String?
+  connectedAt    DateTime?
+  disconnectedAt DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+}
+
+model ApplicationSetting {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  value     String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model ActivityLog {
+  id        String   @id @default(cuid())
+  type      String
+  message   String
+  metadata  String?
+  createdAt DateTime @default(now())
+}
